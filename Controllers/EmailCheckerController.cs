@@ -30,7 +30,7 @@ namespace EmailChecked.Controllers
         }
 
 
-        [HttpPost("get-emails")]
+        [HttpPost("get")]
         public async Task<IActionResult> GetEmailAsync(
                             int customerId,
                             List<string> fullNames,
