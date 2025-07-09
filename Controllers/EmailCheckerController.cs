@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Components;
+﻿using ApiCheckMail;
+using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
@@ -17,7 +18,7 @@ namespace EmailChecked.Controllers
 {
 
     [ApiController]
-    [Route("api/v1/email")]
+    [Route("api/v1/emails")]
     public class EmailCheckerController : ControllerBase
     {
         private readonly IConnectionMultiplexer _redis;
@@ -30,22 +31,17 @@ namespace EmailChecked.Controllers
         }
 
 
-        [HttpPost("get")]
-        public async Task<IActionResult> GetEmailAsync(
-                            int customerId,
-                            List<string> fullNames,
-                            string domain,
-                            string? domainCraw,
-                            CancellationToken token)
+        [HttpPost("query")]
+        public async Task<IActionResult> QueryEmails([FromBody] EmailQueryRequest request,CancellationToken token)
         {
             var stopwatch = Stopwatch.StartNew();
 
             // 1. Validate customer ID
-            if (customerId == 0)
+            if (request.CustomerId == 0)
                 return Unauthorized("Missing API key");
 
             var db = _redis.GetDatabase();
-            string customerKey = $"customer:{customerId}";
+            string customerKey = $"customer:{request.CustomerId}";
 
             if (!await db.KeyExistsAsync(customerKey))
                 return NotFound("Customer not found");
@@ -65,12 +61,12 @@ namespace EmailChecked.Controllers
                 return Unauthorized("API key quota exceeded");
 
             // 2. Validate input data
-            if (fullNames == null || fullNames.Count == 0 || string.IsNullOrWhiteSpace(domain))
+            if (request.Names == null || request.Names.Count == 0 || string.IsNullOrWhiteSpace(request.Domain))
                 return BadRequest("Full name and domain are required");
 
             // 3. Generate emails
             var emails = new List<string>();
-            foreach (var item in fullNames)
+            foreach (var item in request.Names)
             {
                 if (string.IsNullOrWhiteSpace(item))
                     return BadRequest("Full name cannot be empty");
@@ -79,7 +75,7 @@ namespace EmailChecked.Controllers
                 var lastName = names.Length > 0 ? names[0] : string.Empty;
                 var firstName = names.Length > 1 ? string.Join(" ", names.Skip(1)) : string.Empty;
 
-                emails.AddRange(GenerateEmails(firstName, lastName, domain, domainCraw));
+                emails.AddRange(GenerateEmails(firstName, lastName, request.Domain, request.DomainCraw));
             }
             emails = emails.Distinct().ToList();
             if (emails.Count == 0)
