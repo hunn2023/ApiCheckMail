@@ -11,8 +11,8 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
 {
-    var configuration = ConfigurationOptions.Parse("peaceful-parrot-30114.upstash.io:6379");
-    configuration.Password = "AXWiAAIjcDE0MWRmOTliYzEyYjE0YjEyOGIwNTFiNzY4NTY1YmQ4OXAxMA";
+    var configuration = ConfigurationOptions.Parse("sweeping-rat-36259.upstash.io:6379");
+    configuration.Password = "AY2jAAIjcDFlMzM3N2E2YzZhMzE0ZWZiYmZhYWVjOTA4ZWI4NDZiMXAxMA";
     configuration.Ssl = true;
     configuration.AbortOnConnectFail = false;
 

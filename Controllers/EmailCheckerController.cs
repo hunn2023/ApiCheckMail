@@ -1,8 +1,10 @@
 ﻿using ApiCheckMail;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -32,117 +34,108 @@ namespace EmailChecked.Controllers
 
 
         [HttpPost("query")]
-        public async Task<IActionResult> QueryEmails([FromBody] EmailQueryRequest request,CancellationToken token)
+        public async Task<IActionResult> QueryEmails([FromBody] EmailQueryRequest request, CancellationToken token)
         {
             var stopwatch = Stopwatch.StartNew();
 
-            // 1. Validate customer ID
-            if (request.CustomerId == 0)
+            if (string.IsNullOrWhiteSpace(request.CustomerApiKey))
                 return Unauthorized("Missing API key");
 
             var db = _redis.GetDatabase();
-            string customerKey = $"customer:{request.CustomerId}";
 
-            if (!await db.KeyExistsAsync(customerKey))
+            string customerKey = "customer:data";
+            string customerField = $"customer_{request.CustomerApiKey}";
+
+            var customerJson = await db.HashGetAsync(customerKey, customerField);
+            if (customerJson.IsNullOrEmpty)
                 return NotFound("Customer not found");
 
-            var customerData = (await db.HashGetAllAsync(customerKey))
-                                .ToDictionary(h => h.Name.ToString(), h => h.Value.ToString());
+            var customer = JsonConvert.DeserializeObject<CustomerInfo>(customerJson!);
 
-            if (!customerData.TryGetValue("quota_total", out var quotaTotalStr) ||
-                !customerData.TryGetValue("quota_used", out var quotaUsedStr))
-                return BadRequest("Missing required fields in customer data");
+            if (customer.isActive != "1")
+                return Unauthorized("Customer is not active");
 
-            if (!int.TryParse(quotaTotalStr, out var quotaTotal) ||
-                !int.TryParse(quotaUsedStr, out var quotaUsed))
-                return BadRequest("Invalid quota values");
-
-            if (quotaUsed >= quotaTotal)
+            if (customer.quota_used >= customer.quota_total)
                 return Unauthorized("API key quota exceeded");
 
-            // 2. Validate input data
+
             if (request.Names == null || request.Names.Count == 0 || string.IsNullOrWhiteSpace(request.Domain))
                 return BadRequest("Full name and domain are required");
 
-            // 3. Generate emails
+
+
             var emails = new List<string>();
-            foreach (var item in request.Names)
+            foreach (var fullName in request.Names)
             {
-                if (string.IsNullOrWhiteSpace(item))
+                if (string.IsNullOrWhiteSpace(fullName))
                     return BadRequest("Full name cannot be empty");
 
-                var names = item.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var lastName = names.Length > 0 ? names[0] : string.Empty;
-                var firstName = names.Length > 1 ? string.Join(" ", names.Skip(1)) : string.Empty;
+                var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var lastName = parts.Length > 0 ? parts[0] : "";
+                var firstName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
 
                 emails.AddRange(GenerateEmails(firstName, lastName, request.Domain, request.DomainCraw));
             }
+
             emails = emails.Distinct().ToList();
             if (emails.Count == 0)
                 return BadRequest("No valid emails generated");
 
-            // 4. Distribute emails to active API keys
-            var selectedKeys = new List<(string redisKey, string realKey, List<string> assignedEmails)>();
-            var allKeys = await db.ListRangeAsync("apikey:list");
+            // 1. Lấy danh sách các key còn quota bằng Lua Script
+            var luaGetKeys = @"
+                            local rawKeys = redis.call('HVALS', 'apikey:data')
+                            local result = {}
 
-            var semaphoreKey = new SemaphoreSlim(50); // Giới hạn 50 request đồng thời
-            var keyTasks = allKeys.Select(async key =>
-            {
-                await semaphoreKey.WaitAsync();
-                try
-                {
-                    string keyRedis = $"apikey:{key}";
-                    var hashEntries = await db.HashGetAllAsync(keyRedis);
-                    var keyData = hashEntries.ToDictionary(h => h.Name.ToString(), h => h.Value.ToString());
+                            for i = 1, #rawKeys do
+                                local data = cjson.decode(rawKeys[i])
+                                local usage = tonumber(data['usage_count']) or 0
+                                local max = tonumber(data['max_limit']) or 0
+                                local isactive = data['isactive']
+                                if isactive == '1' and usage < max then
+                                    table.insert(result, cjson.encode({
+                                        keyId = data['key_id'],
+                                        realKey = data['key'],
+                                        canUse = max - usage
+                                    }))
+                                end
+                            end
+                            return result
+                        ";
 
-                    if (!keyData.TryGetValue("isactive", out var isActive) || isActive != "1") return (ValueTuple<string, string, int>?)null;
-                    if (!keyData.TryGetValue("key", out var realKey)) return (ValueTuple<string, string, int>?)null;
+            var rawKeys = await db.ScriptEvaluateAsync(luaGetKeys);
+            var validKeys = ((RedisResult[])rawKeys)
+                .Select(r => JsonConvert.DeserializeObject<ApiKeyInfo>((string)(RedisValue)r))
+                .OrderByDescending(k => k.CanUse)
+                .ToList();
 
-                    int usage = int.TryParse(keyData.GetValueOrDefault("usage_count", "0"), out var u) ? u : 0;
-                    int max = int.TryParse(keyData.GetValueOrDefault("max_limit", "0"), out var m) ? m : 0;
-                    int canUse = max - usage;
+            if (validKeys.Count == 0)
+                return BadRequest("No valid API keys found");
 
-                    if (canUse <= 0) return (ValueTuple<string, string, int>?)null; ;
-
-                    return (keyRedis, realKey, canUse);
-                }
-                finally
-                {
-                    semaphoreKey.Release();
-                }
-            });
-
-            var keyResults = await Task.WhenAll(keyTasks);
-            List<(string keyRedis, string realKey, int canUse)> validKeys = keyResults
-             .Where(x => x != null)
-             .Select(x => x.Value)
-             .ToList();
-
+            // 2. Phân phối email theo quota
+            var selectedKeys = new List<(string KeyId, string RealKey, List<string> AssignedEmails)>();
             int emailIndex = 0;
-            foreach (var (keyRedis, realKey, canUse) in validKeys)
+
+            foreach (var key in validKeys)
             {
-                int remaining = emails.Count - emailIndex;
-                int assignCount = Math.Min(canUse, remaining);
+                int assignCount = Math.Min(key.CanUse, emails.Count - emailIndex);
                 if (assignCount <= 0) break;
 
                 var assignedEmails = emails.Skip(emailIndex).Take(assignCount).ToList();
-                selectedKeys.Add((keyRedis, realKey, assignedEmails));
+                selectedKeys.Add((key.KeyId, key.RealKey, assignedEmails));
                 emailIndex += assignCount;
 
                 if (emailIndex >= emails.Count) break;
             }
 
             if (emailIndex < emails.Count)
-            {
-                return BadRequest("Not enough API quota available");
-            }
+                return BadRequest("Not enough API quota available to process all emails.");
 
-            // 5. Check emails in parallel (across all keys)
+            // 3. Kiểm tra email song song
             var results = new ConcurrentBag<object>();
             var semaphore = new SemaphoreSlim(13);
             var allTasks = new List<Task>();
 
-            foreach (var (redisKey, realKey, emailsToCheck) in selectedKeys)
+            foreach (var (keyId, realKey, emailsToCheck) in selectedKeys)
             {
                 foreach (var email in emailsToCheck)
                 {
@@ -160,18 +153,51 @@ namespace EmailChecked.Controllers
                         }
                     }));
                 }
-
-                // Cập nhật usage của từng API key (sau khi assign email)
-                await db.HashIncrementAsync(redisKey, "usage_count", emailsToCheck.Count);
             }
 
             await Task.WhenAll(allTasks);
 
-            // 6. Cập nhật quota_used cho customer
-            await db.HashIncrementAsync(customerKey, "quota_used", emails.Count);
+            // 4. Cập nhật usage cho từng key bằng Lua
+            var updateUsageScript = @"
+                                    for i = 1, #KEYS do
+                                        local keyId = KEYS[i]
+                                        local inc = tonumber(ARGV[i])
+                                        local json = redis.call('HGET', 'apikey:data', keyId)
+                                        local data = cjson.decode(json)
+
+                                        data['usage_count'] = (tonumber(data['usage_count']) or 0) + inc
+                                        redis.call('HSET', 'apikey:data', keyId, cjson.encode(data))
+                                    end
+                                    return 'OK'
+                                ";
+
+            var redisKeys = selectedKeys.Select(k => (RedisKey)k.KeyId).ToArray();
+            var usageCounts = selectedKeys.Select(k => (RedisValue)k.AssignedEmails.Count).ToArray();
+            await db.ScriptEvaluateAsync(updateUsageScript, redisKeys, usageCounts);
+            // 5. Cập nhật quota_used cho customer
+            customer.quota_used += emails.Count;
+            await db.HashSetAsync(customerKey, customerField, JsonConvert.SerializeObject(customer));
+
+
+
+            // 6. Ghi log theo ngày giống customer (dùng hash 1 key/ngày)
+            string logKey = "customer:usage:log";
+            string logField = $"customer_log_{request.CustomerApiKey}";
+            string today = DateTime.UtcNow.ToString("dd/MM/yyyy");
+
+            var rawLog = await db.HashGetAsync(logKey, logField);
+
+            var log = rawLog.HasValue
+                ? JsonConvert.DeserializeObject<CustomerUsageJsonLog>(rawLog!) ?? new CustomerUsageJsonLog()
+                : new CustomerUsageJsonLog { customer_api_key = request.CustomerApiKey };
+
+            log.date = today;
+            log.email_check += emails.Count;
+
+            await db.HashSetAsync(logKey, logField, JsonConvert.SerializeObject(log));
+
 
             stopwatch.Stop();
-
             return Ok(new
             {
                 totalChecked = emails.Count,
@@ -180,6 +206,7 @@ namespace EmailChecked.Controllers
                 results = results.ToList()
             });
         }
+
 
         //[HttpPost("get-emails")]
         //public async Task<IActionResult> GetEmailAsync(int customerId, List<string> fullNames, string domain, string? domainCraw, CancellationToken token)
@@ -337,6 +364,100 @@ namespace EmailChecked.Controllers
             }
         }
 
+
+        //[HttpGet("valid-keys")]
+        //public async Task<IActionResult> GetValidRedisKeysAsync()
+        //{
+        //    var validKeys = new List<ApiKeyInfo>();
+        //    int errorCount = 0;
+        //    int totalKeysScanned = 0;
+
+        //    try
+        //    {
+        //        var db = _redis.GetDatabase();
+        //        long cursor = 0;
+
+        //        do
+        //        {
+        //            var result = await db.ExecuteAsync("SCAN", cursor.ToString(), "MATCH", "apikey:*", "COUNT", 5000);
+        //            var scanResult = (RedisResult[])result;
+
+        //            cursor = long.Parse((string)scanResult[0]);
+        //            var keys = (RedisResult[])scanResult[1];
+
+        //            if (keys.Length == 0) continue;
+
+        //            var keyStrings = keys.Select(k => (string)k).ToArray();
+        //            totalKeysScanned += keyStrings.Length;
+
+        //            var tasks = keyStrings.Select(key => db.HashGetAllAsync(key)).ToArray();
+        //            var hashResults = await Task.WhenAll(tasks);
+
+        //            for (int i = 0; i < keyStrings.Length; i++)
+        //            {
+        //                try
+        //                {
+        //                    var key = keyStrings[i];
+        //                    var hash = hashResults[i];
+
+        //                    int maxLimit = 0, usageCount = 0, isActive = 0;
+        //                    string value = null;
+        //                    foreach (var entry in hash)
+        //                    {
+        //                        switch (entry.Name.ToString())
+        //                        {
+        //                            case "key":
+        //                                value = entry.Value;
+        //                                break;
+        //                            case "max_limit":
+        //                                int.TryParse(entry.Value, out maxLimit);
+        //                                break;
+        //                            case "usage_count":
+        //                                int.TryParse(entry.Value, out usageCount);
+        //                                break;
+        //                            case "isactive":
+        //                                int.TryParse(entry.Value, out isActive);
+        //                                break;
+        //                        }
+        //                    }
+
+        //                    if (isActive == 1 && usageCount < maxLimit)
+        //                    {
+        //                        validKeys.Add(new ApiKeyInfo
+        //                        {
+        //                            Key = key,
+        //                            Value = value,
+        //                            MaxLimit = maxLimit,
+        //                            UsageCount = usageCount,
+        //                            IsActive = isActive
+        //                        });
+        //                    }
+        //                }
+        //                catch (Exception exKey)
+        //                {
+        //                    errorCount++;
+        //                    Console.WriteLine($"Lỗi xử lý key: {keyStrings[i]}, chi tiết: {exKey.Message}");
+        //                    continue;
+        //                }
+        //            }
+
+        //        } while (cursor != 0);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"Lỗi tổng thể khi truy cập Redis: {ex.Message}");
+        //    }
+
+        //    return Ok(new ApiKeyResult
+        //    {
+        //        ValidKeys = validKeys,
+        //        ErrorCount = errorCount,
+        //        TotalKeysScanned = totalKeysScanned
+        //    });
+        //}
+
+
+
         private List<string> GenerateEmails(string firstName, string lastName, string domain, string domainCraw)
         {
             var result = new List<string>();
@@ -418,5 +539,57 @@ namespace EmailChecked.Controllers
                 return string.Empty;
             }
         }
+
+
+        [HttpGet("usage-stats")]
+        public async Task<IActionResult> GetCustomerUsageStats([FromQuery] int customerId, [FromQuery] DateTime fromDate, [FromQuery] DateTime toDate)
+        {
+            if (customerId <= 0)
+                return BadRequest("Invalid customerId");
+
+            if (fromDate > toDate)
+                return BadRequest("Invalid date range");
+
+            var db = _redis.GetDatabase();
+            var days = (toDate.Date - fromDate.Date).Days + 1;
+
+            var keys = new List<RedisKey>();
+            var dateList = new List<string>();
+
+            for (int i = 0; i < days; i++)
+            {
+                var date = fromDate.Date.AddDays(i);
+                var redisKey = $"customer:usage:daily:{customerId}:{date:yyyyMMdd}";
+                keys.Add(redisKey);
+                dateList.Add(date.ToString("yyyy-MM-dd"));
+            }
+
+            var values = await db.StringGetAsync(keys.ToArray());
+
+            var result = new List<object>();
+            for (int i = 0; i < values.Length; i++)
+            {
+                int count = 0;
+                if (values[i].HasValue && int.TryParse(values[i], out var val))
+                {
+                    count = val;
+                }
+
+                result.Add(new
+                {
+                    date = dateList[i],
+                    usedKeys = count
+                });
+            }
+
+            return Ok(new
+            {
+                customerId,
+                from = fromDate.ToString("yyyy-MM-dd"),
+                to = toDate.ToString("yyyy-MM-dd"),
+                stats = result
+            });
+        }
+
     }
 }
