@@ -2,7 +2,9 @@
 {
     public class EmailQueryRequest
     {
-        public string CustomerApiKey { get; set; }
+        public string sheetName { get; set; }
+
+        public string CustomerApiKey { get; set; }  
 
         public List<string> Names { get; set; }
 
@@ -35,11 +37,17 @@
         public int quota_used { get; set; }
     }
 
-    public class CustomerUsageJsonLog
+    public class CustomerDailyUsageLog
     {
         public string customer_api_key { get; set; }
-        public string date { get; set; }
-        public int email_check { get; set; }
+        public Dictionary<string, CustomerUsageDetail> logs { get; set; } = new();
     }
+
+    public class CustomerUsageDetail
+    {
+        public int total_checked { get; set; }
+        public int total_ok { get; set; }
+    }
+
 
 }

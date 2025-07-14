@@ -37,6 +37,38 @@ namespace EmailChecked.Controllers
         public async Task<IActionResult> QueryEmails([FromBody] EmailQueryRequest request, CancellationToken token)
         {
             var stopwatch = Stopwatch.StartNew();
+            List<EmailQueryRequest> users = new List<EmailQueryRequest>()
+            {
+                new EmailQueryRequest
+                {
+                    sheetName = "hadtt",
+                    CustomerApiKey = "9a7f8b10-8c3d-437b-9482-362b56a4106a",
+                },
+                new EmailQueryRequest
+                {
+                     sheetName = "tranght",
+                    CustomerApiKey = "bd427722-ebba-4da2-99e3-d091065f9ec5",
+                },
+                new EmailQueryRequest
+                {
+                    sheetName = "hoahp",
+                    CustomerApiKey = "313f2ed9-e776-47b3-acc1-511a021b8b7c",
+                },
+                 new EmailQueryRequest
+                {
+                    sheetName = "huyennk",
+                    CustomerApiKey = "81f3116c-c19e-4c96-82ca-a44d339b3141",
+                },
+            };
+
+
+
+            var user = users.FirstOrDefault(x=> x.sheetName == request.sheetName);
+            if (user == null)
+                return BadRequest("Invalid user");
+
+            request.CustomerApiKey = user.CustomerApiKey;
+
 
             if (string.IsNullOrWhiteSpace(request.CustomerApiKey))
                 return Unauthorized("Missing API key");
@@ -157,6 +189,24 @@ namespace EmailChecked.Controllers
 
             await Task.WhenAll(allTasks);
 
+            var validEmails = results
+                 .Cast<object>()
+                 .Select(r =>
+                 {
+                     var props = r.GetType().GetProperties();
+                     var email = props.First(p => p.Name == "email").GetValue(r)?.ToString();
+                     var responseStr = props.First(p => p.Name == "response").GetValue(r)?.ToString();
+
+                     if(responseStr == "ok")
+                     {
+                         return email;
+                     }
+                     return null;
+                 })
+                 .Where(email => !string.IsNullOrWhiteSpace(email))
+                 .ToList();
+
+
             // 4. Cập nhật usage cho từng key bằng Lua
             var updateUsageScript = @"
                                     for i = 1, #KEYS do
@@ -179,23 +229,45 @@ namespace EmailChecked.Controllers
             await db.HashSetAsync(customerKey, customerField, JsonConvert.SerializeObject(customer));
 
 
-
-            // 6. Ghi log theo ngày giống customer (dùng hash 1 key/ngày)
+            // 6. Ghi log sử dụng theo ngày, chỉ cập nhật nếu đúng ngày hiện tại
             string logKey = "customer:usage:log";
             string logField = $"customer_log_{request.CustomerApiKey}";
             string today = DateTime.UtcNow.ToString("dd/MM/yyyy");
 
             var rawLog = await db.HashGetAsync(logKey, logField);
 
-            var log = rawLog.HasValue
-                ? JsonConvert.DeserializeObject<CustomerUsageJsonLog>(rawLog!) ?? new CustomerUsageJsonLog()
-                : new CustomerUsageJsonLog { customer_api_key = request.CustomerApiKey };
+            CustomerDailyUsageLog usageLog;
 
-            log.date = today;
-            log.email_check += emails.Count;
+            if (rawLog.HasValue)
+            {
+                usageLog = JsonConvert.DeserializeObject<CustomerDailyUsageLog>(rawLog!) ?? new();
+            }
+            else
+            {
+                usageLog = new CustomerDailyUsageLog
+                {
+                    customer_api_key = request.CustomerApiKey,
+                    logs = new Dictionary<string, CustomerUsageDetail>()
+                };
+            }
 
-            await db.HashSetAsync(logKey, logField, JsonConvert.SerializeObject(log));
+            // cập nhật hoặc tạo mới theo ngày
+            if (usageLog.logs.TryGetValue(today, out var detail))
+            {
+                detail.total_checked += emails.Count;
+                detail.total_ok += validEmails.Count;
+            }
+            else
+            {
+                usageLog.logs[today] = new CustomerUsageDetail
+                {
+                    total_checked = emails.Count,
+                    total_ok = validEmails.Count
+                };
+            }
 
+            // lưu lại
+            await db.HashSetAsync(logKey, logField, JsonConvert.SerializeObject(usageLog));
 
             stopwatch.Stop();
             return Ok(new
@@ -589,6 +661,85 @@ namespace EmailChecked.Controllers
                 to = toDate.ToString("yyyy-MM-dd"),
                 stats = result
             });
+        }
+
+
+        // API: Trả về quota của toàn bộ customer
+        [HttpGet("quotas")]
+        public async Task<IActionResult> GetAllCustomerQuotas()
+        {
+            var db = _redis.GetDatabase();
+            var keys = await db.HashKeysAsync("customer:data");
+            var result = new List<object>();
+
+            foreach (var key in keys)
+            {
+                var raw = await db.HashGetAsync("customer:data", key);
+                if (!raw.IsNullOrEmpty)
+                {
+                    var customer = JsonConvert.DeserializeObject<CustomerInfo>(raw);
+                    result.Add(new
+                    {
+                        customer_api_key = customer.api_key,
+                        quota_total = customer.quota_total,
+                        quota_used = customer.quota_used
+                    });
+                }
+            }
+
+            return Ok(result);
+        }
+
+        // API: Trả về quota của 1 customer
+        [HttpGet("quota/{apiKey}")]
+        public async Task<IActionResult> GetQuota(string apiKey)
+        {
+            var db = _redis.GetDatabase();
+            var field = $"customer_{apiKey}";
+            var raw = await db.HashGetAsync("customer:data", field);
+            if (raw.IsNullOrEmpty) return NotFound();
+
+            var customer = JsonConvert.DeserializeObject<CustomerInfo>(raw);
+            return Ok(new
+            {
+                customer_api_key = customer.api_key,
+                quota_total = customer.quota_total,
+                quota_used = customer.quota_used
+            });
+        }
+
+        // API: Thống kê sử dụng theo ngày của tất cả customer
+        [HttpGet("logs")]
+        public async Task<IActionResult> GetAllLogs()
+        {
+            var db = _redis.GetDatabase();
+            var keys = await db.HashKeysAsync("customer:usage:log");
+            var result = new List<object>();
+
+            foreach (var key in keys)
+            {
+                var raw = await db.HashGetAsync("customer:usage:log", key);
+                if (!raw.IsNullOrEmpty)
+                {
+                    var log = JsonConvert.DeserializeObject<CustomerDailyUsageLog>(raw);
+                    result.Add(log);
+                }
+            }
+
+            return Ok(result);
+        }
+
+        // API: Thống kê theo ngày của 1 customer
+        [HttpGet("logs/{apiKey}")]
+        public async Task<IActionResult> GetLogByKey(string apiKey)
+        {
+            var db = _redis.GetDatabase();
+            var field = $"customer_log_{apiKey}";
+            var raw = await db.HashGetAsync("customer:usage:log", field);
+            if (raw.IsNullOrEmpty) return NotFound();
+
+            var log = JsonConvert.DeserializeObject<CustomerDailyUsageLog>(raw);
+            return Ok(log);
         }
 
     }
