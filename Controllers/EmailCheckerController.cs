@@ -1143,86 +1143,159 @@ namespace EmailChecked.Controllers
             {
                 var db = _redis.GetDatabase();
 
-                var lua = @" local key = KEYS[1]
-                        local data = redis.call('HVALS', key)
+                var lua = @"local key = KEYS[1]
+                            local data = redis.call('HVALS', key)
 
-                        local parse_date = function(date_str)
-                            local d, m, y = date_str:match(""(%d+)/(%d+)/(%d+)"")
-                            return os.time({day=tonumber(d), month=tonumber(m), year=tonumber(y)})
-                        end
+                            local result = {}
 
-                        local format_day = function(ts)
-                            local d = os.date(""*t"", ts)
-                            return string.format(""%02d/%02d"", d.day, d.month)
-                        end
-
-                        local format_week = function(ts)
-                            local d = os.date(""*t"", ts)
-                            local dow = d.wday % 7  -- Sunday=0
-                            local sunday_ts = ts + (7 - dow) * 86400
-                            return format_day(sunday_ts)
-                        end
-
-                        local format_month = function(ts)
-                            local d = os.date(""*t"", ts)
-                            return string.format(""01/%02d"", d.month)
-                        end
-
-                        local daily = {}
-                        local weekly = {}
-                        local monthly = {}
-
-                        for _, raw in ipairs(data) do
-                            local ok, obj = pcall(cjson.decode, raw)
-                            if ok and obj['logs'] then
-                                for date_str, v in pairs(obj['logs']) do
-                                    local ts = parse_date(date_str)
-                                    local total = tonumber(v['total_checked']) or 0
-
-                                    local d = format_day(ts)
-                                    daily[d] = (daily[d] or 0) + total
-
-                                    local w = format_week(ts)
-                                    weekly[w] = (weekly[w] or 0) + total
-
-                                    local m = format_month(ts)
-                                    monthly[m] = (monthly[m] or 0) + total
+                            for _, raw in ipairs(data) do
+                                local ok, obj = pcall(cjson.decode, raw)
+                                if ok and obj['logs'] then
+                                    for date_str, v in pairs(obj['logs']) do
+                                        local total = tonumber(v['total_checked']) or 0
+                                        table.insert(result, cjson.encode({ date = date_str, total = total }))
+                                    end
                                 end
                             end
-                        end
 
-                        local result = {}
-
-                        for d, v in pairs(daily) do
-                            table.insert(result, cjson.encode({ name = d, daily = v, weekly = cjson.null, monthly = cjson.null }))
-                        end
-
-                        for w, v in pairs(weekly) do
-                            table.insert(result, cjson.encode({ name = w, daily = cjson.null, weekly = v, monthly = cjson.null }))
-                        end
-
-                        for m, v in pairs(monthly) do
-                            table.insert(result, cjson.encode({ name = m, daily = cjson.null, weekly = cjson.null, monthly = v }))
-                        end
-
-                        return result
-                        ";
-
+                            return result
+                            ";
                 var result = await db.ScriptEvaluateAsync(lua, new RedisKey[] { "customer:usage:log" });
 
-                var arr = (RedisResult[])result;
-
-                var list = arr.Select(x =>
-                    JsonConvert.DeserializeObject<KeyUsageStat>(x.ToString()))
-                    .OrderBy(x => x.Name) // hoặc theo date logic nếu cần
+                var rawLogs = ((RedisResult[])result)
+                    .Select(x => JsonConvert.DeserializeObject<LogRaw>(x.ToString()))
                     .ToList();
 
-                return Ok(list);
+                var daily = new Dictionary<string, int>();
+                var weekly = new Dictionary<string, int>();
+                var monthly = new Dictionary<string, int>();
+
+                foreach (var log in rawLogs)
+                {
+                    if (!DateTime.TryParseExact(log.Date, "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out var date))
+                        continue;
+
+                    var dayKey = date.ToString("dd/MM");
+                    var weekKey = FirstDayOfWeek(date).ToString("dd/MM");
+                    var monthKey = new DateTime(date.Year, date.Month, 1).ToString("dd/MM");
+
+                    daily[dayKey] = daily.GetValueOrDefault(dayKey, 0) + log.Total;
+                    weekly[weekKey] = weekly.GetValueOrDefault(weekKey, 0) + log.Total;
+                    monthly[monthKey] = monthly.GetValueOrDefault(monthKey, 0) + log.Total;
+                }
+
+                var final = new List<KeyUsageStat>();
+
+                final.AddRange(daily.Select(kv => new KeyUsageStat { Name = kv.Key, Daily = kv.Value }));
+                final.AddRange(weekly.Select(kv => new KeyUsageStat { Name = kv.Key, Weekly = kv.Value }));
+                final.AddRange(monthly.Select(kv => new KeyUsageStat { Name = kv.Key, Monthly = kv.Value }));
+
+                final = final.OrderBy(x => x.Name).ToList();
+
+                return Ok(final);
             }
             catch (Exception ex)
             {
                 return StatusCode(500, $"Redis script error: {ex.Message}");
             }
+        }
+
+        [HttpGet("stats/staff")]
+        public async Task<IActionResult> GetStaffUsageToday()
+        {
+            var db = _redis.GetDatabase();
+
+            var luaScript = @"
+                    local customers = redis.call('HGETALL', KEYS[1])
+                    local logs = redis.call('HGETALL', KEYS[2])
+                    local today = ARGV[1]
+
+                    local result = {}
+
+                    for i = 1, #customers, 2 do
+                        local field = customers[i]
+                        local rawCustomer = customers[i + 1]
+                        local customer = cjson.decode(rawCustomer)
+
+                        local apiKey = string.gsub(field, 'customer_', '')
+                        local logField = 'customer_log_' .. apiKey
+                        local rawLog = nil
+
+                        for j = 1, #logs, 2 do
+                            if logs[j] == logField then
+                                rawLog = logs[j + 1]
+                                break
+                            end
+                        end
+
+                        local checkedToday = 0
+                        local okToday = 0
+
+                        if rawLog then
+                            local logData = cjson.decode(rawLog)
+                            local log = logData.logs and logData.logs[today]
+                            if log then
+                                checkedToday = log.total_checked or 0
+                                okToday = log.total_ok or 0
+                            end
+                        end
+
+                        table.insert(result, cjson.encode({
+                            apiKey = apiKey,
+                            quotaTotal = tonumber(customer.quota_total) or 0,
+                            quotaUsed = tonumber(customer.quota_used) or 0,
+                            checkedToday = checkedToday,
+                            okToday = okToday
+                        }))
+                    end
+
+                    return result
+                ";
+
+            var today = DateTime.UtcNow.ToString("dd/MM/yyyy");
+            var redisResult = await db.ScriptEvaluateAsync(luaScript,
+                new RedisKey[] { "customer:data", "customer:usage:log" },
+                new RedisValue[] { today });
+
+            var rawList = (RedisResult[])redisResult;
+
+            // ánh xạ apiKey -> tên sheet
+            var apiKeyToName = new Dictionary<string, string>
+            {
+                ["9a7f8b10-8c3d-437b-9482-362b56a4106a"] = "hadtt",
+                ["bd427722-ebba-4da2-99e3-d091065f9ec5"] = "tranght",
+                ["313f2ed9-e776-47b3-acc1-511a021b8b7c"] = "hoahp",
+                ["81f3116c-c19e-4c96-82ca-a44d339b3141"] = "huyennk"
+            };
+
+            var results = rawList
+                .Select(r => JsonConvert.DeserializeObject<StaffUsageResult>((string)(RedisValue)r))
+                .Select(r =>
+                {
+                    double percent = r.quotaTotal == 0 ? 0 : Math.Round((double)r.quotaUsed / r.quotaTotal * 100, 2);
+                    return new
+                    {
+                        sheetName = apiKeyToName.TryGetValue(r.apiKey, out var name) ? name : r.apiKey,
+                        r.checkedToday,
+                        r.okToday,
+                        r.quotaTotal,
+                        r.quotaUsed,
+                        quotaRemaining = r.quotaTotal - r.quotaUsed,
+                        percentUsed = $"{percent}%",
+                        status = percent >= 100 ? "❌ Hết quota" : "✅ Còn quota"
+                    };
+                })
+                .ToList();
+
+            return Ok(results);
+        }
+
+
+        private static DateTime FirstDayOfWeek(DateTime dt)
+        {
+            int diff = dt.DayOfWeek - DayOfWeek.Sunday;
+            if (diff < 0) diff += 7;
+            return dt.AddDays(-1 * diff).Date;
         }
 
     }

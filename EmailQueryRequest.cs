@@ -82,4 +82,18 @@ namespace ApiCheckMail
         public int? Monthly { get; set; }
     }
 
+    public class LogRaw
+    {
+        public string Date { get; set; } // dạng "dd/MM/yyyy"
+        public int Total { get; set; }
+    }
+
+    public class StaffUsageResult
+    {
+        public string apiKey { get; set; }
+        public int quotaTotal { get; set; }
+        public int quotaUsed { get; set; }
+        public int checkedToday { get; set; }
+        public int okToday { get; set; }
+    }
 }
