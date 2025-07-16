@@ -1,4 +1,6 @@
-﻿namespace ApiCheckMail
+﻿using Newtonsoft.Json;
+
+namespace ApiCheckMail
 {
     public class EmailQueryRequest
     {
@@ -49,5 +51,35 @@
         public int total_ok { get; set; }
     }
 
+
+    public class QuotaSummary
+    {
+        public int Total { get; set; }
+        public int Used { get; set; }
+        public int Remaining { get; set; }
+    }
+
+    public class UsageLogPerUser
+    {
+        [JsonProperty("email")]
+        public string Email { get; set; }
+
+        [JsonProperty("quota_total")]
+        public int QuotaTotal { get; set; }
+
+        [JsonProperty("total_checked")]
+        public int TotalChecked { get; set; }
+
+        [JsonProperty("total_ok")]
+        public int TotalOk { get; set; }
+    }
+
+    public class KeyUsageStat
+    {
+        public string Name { get; set; }
+        public int? Daily { get; set; }
+        public int? Weekly { get; set; }
+        public int? Monthly { get; set; }
+    }
 
 }

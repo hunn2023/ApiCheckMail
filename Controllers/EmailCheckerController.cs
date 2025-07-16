@@ -8,6 +8,7 @@ using Newtonsoft.Json.Linq;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Http;
@@ -33,48 +34,274 @@ namespace EmailChecked.Controllers
         }
 
 
+        //[HttpPost("query")]
+        //public async Task<IActionResult> QueryEmails([FromBody] EmailQueryRequest request, CancellationToken token)
+        //{
+        //    var stopwatch = Stopwatch.StartNew();
+        //    List<EmailQueryRequest> users = new List<EmailQueryRequest>()
+        //    {
+        //        new EmailQueryRequest
+        //        {
+        //            sheetName = "hadtt",
+        //            CustomerApiKey = "9a7f8b10-8c3d-437b-9482-362b56a4106a",
+        //        },
+        //        new EmailQueryRequest
+        //        {
+        //             sheetName = "tranght",
+        //            CustomerApiKey = "bd427722-ebba-4da2-99e3-d091065f9ec5",
+        //        },
+        //        new EmailQueryRequest
+        //        {
+        //            sheetName = "hoahp",
+        //            CustomerApiKey = "313f2ed9-e776-47b3-acc1-511a021b8b7c",
+        //        },
+        //         new EmailQueryRequest
+        //        {
+        //            sheetName = "huyennk",
+        //            CustomerApiKey = "81f3116c-c19e-4c96-82ca-a44d339b3141",
+        //        },
+        //    };
+
+
+
+        //    var user = users.FirstOrDefault(x => x.sheetName == request.sheetName);
+        //    if (user == null)
+        //        return BadRequest("Invalid user");
+
+        //    request.CustomerApiKey = user.CustomerApiKey;
+
+
+        //    if (string.IsNullOrWhiteSpace(request.CustomerApiKey))
+        //        return Unauthorized("Missing API key");
+
+        //    var db = _redis.GetDatabase();
+
+        //    string customerKey = "customer:data";
+        //    string customerField = $"customer_{request.CustomerApiKey}";
+
+        //    var customerJson = await db.HashGetAsync(customerKey, customerField);
+        //    if (customerJson.IsNullOrEmpty)
+        //        return NotFound("Customer not found");
+
+        //    var customer = JsonConvert.DeserializeObject<CustomerInfo>(customerJson!);
+
+        //    if (customer.isActive != "1")
+        //        return Unauthorized("Customer is not active");
+
+        //    if (customer.quota_used >= customer.quota_total)
+        //        return Unauthorized("API key quota exceeded");
+
+
+        //    if (request.Names == null || request.Names.Count == 0 || string.IsNullOrWhiteSpace(request.Domain))
+        //        return BadRequest("Full name and domain are required");
+
+
+
+        //    var emails = new List<string>();
+        //    foreach (var fullName in request.Names)
+        //    {
+        //        if (string.IsNullOrWhiteSpace(fullName))
+        //            return BadRequest("Full name cannot be empty");
+
+        //        var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        //        var lastName = parts.Length > 0 ? parts[0] : "";
+        //        var firstName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+
+        //        emails.AddRange(GenerateEmails(firstName, lastName, request.Domain, request.DomainCraw));
+        //    }
+
+        //    emails = emails.Distinct().ToList();
+        //    if (emails.Count == 0)
+        //        return BadRequest("No valid emails generated");
+
+        //    // 1. Lấy danh sách các key còn quota bằng Lua Script
+        //    var luaGetKeys = @"
+        //                    local rawKeys = redis.call('HVALS', 'apikey:data')
+        //                    local result = {}
+
+        //                    for i = 1, #rawKeys do
+        //                        local data = cjson.decode(rawKeys[i])
+        //                        local usage = tonumber(data['usage_count']) or 0
+        //                        local max = tonumber(data['max_limit']) or 0
+        //                        local isactive = data['isactive']
+        //                        if isactive == '1' and usage < max then
+        //                            table.insert(result, cjson.encode({
+        //                                keyId = data['key_id'],
+        //                                realKey = data['key'],
+        //                                canUse = max - usage
+        //                            }))
+        //                        end
+        //                    end
+        //                    return result
+        //                ";
+
+        //    var rawKeys = await db.ScriptEvaluateAsync(luaGetKeys);
+        //    var validKeys = ((RedisResult[])rawKeys)
+        //        .Select(r => JsonConvert.DeserializeObject<ApiKeyInfo>((string)(RedisValue)r))
+        //        .OrderByDescending(k => k.CanUse)
+        //        .ToList();
+
+        //    if (validKeys.Count == 0)
+        //        return BadRequest("No valid API keys found");
+
+        //    // 2. Phân phối email theo quota
+        //    var selectedKeys = new List<(string KeyId, string RealKey, List<string> AssignedEmails)>();
+        //    int emailIndex = 0;
+
+        //    foreach (var key in validKeys)
+        //    {
+        //        int assignCount = Math.Min(key.CanUse, emails.Count - emailIndex);
+        //        if (assignCount <= 0) break;
+
+        //        var assignedEmails = emails.Skip(emailIndex).Take(assignCount).ToList();
+        //        selectedKeys.Add((key.KeyId, key.RealKey, assignedEmails));
+        //        emailIndex += assignCount;
+
+        //        if (emailIndex >= emails.Count) break;
+        //    }
+
+        //    if (emailIndex < emails.Count)
+        //        return BadRequest("Not enough API quota available to process all emails.");
+
+        //    // 3. Kiểm tra email song song
+        //    var results = new ConcurrentBag<object>();
+        //    var semaphore = new SemaphoreSlim(13);
+        //    var allTasks = new List<Task>();
+
+        //    foreach (var (keyId, realKey, emailsToCheck) in selectedKeys)
+        //    {
+        //        foreach (var email in emailsToCheck)
+        //        {
+        //            allTasks.Add(Task.Run(async () =>
+        //            {
+        //                await semaphore.WaitAsync(token);
+        //                try
+        //                {
+        //                    var json = await CheckEmailAsync(email, realKey, token);
+        //                    results.Add(new { email, response = json });
+        //                }
+        //                finally
+        //                {
+        //                    semaphore.Release();
+        //                }
+        //            }));
+        //        }
+        //    }
+
+        //    await Task.WhenAll(allTasks);
+
+        //    var validEmails = results
+        //         .Cast<object>()
+        //         .Select(r =>
+        //         {
+        //             var props = r.GetType().GetProperties();
+        //             var email = props.First(p => p.Name == "email").GetValue(r)?.ToString();
+        //             var responseStr = props.First(p => p.Name == "response").GetValue(r)?.ToString();
+
+        //             if (responseStr == "ok")
+        //             {
+        //                 return email;
+        //             }
+        //             return null;
+        //         })
+        //         .Where(email => !string.IsNullOrWhiteSpace(email))
+        //         .ToList();
+
+
+        //    // 4. Cập nhật usage cho từng key bằng Lua
+        //    var updateUsageScript = @"
+        //                            for i = 1, #KEYS do
+        //                                local keyId = KEYS[i]
+        //                                local inc = tonumber(ARGV[i])
+        //                                local json = redis.call('HGET', 'apikey:data', keyId)
+        //                                local data = cjson.decode(json)
+
+        //                                data['usage_count'] = (tonumber(data['usage_count']) or 0) + inc
+        //                                redis.call('HSET', 'apikey:data', keyId, cjson.encode(data))
+        //                            end
+        //                            return 'OK'
+        //                        ";
+
+        //    var redisKeys = selectedKeys.Select(k => (RedisKey)k.KeyId).ToArray();
+        //    var usageCounts = selectedKeys.Select(k => (RedisValue)k.AssignedEmails.Count).ToArray();
+        //    await db.ScriptEvaluateAsync(updateUsageScript, redisKeys, usageCounts);
+        //    // 5. Cập nhật quota_used cho customer
+        //    customer.quota_used += emails.Count;
+        //    await db.HashSetAsync(customerKey, customerField, JsonConvert.SerializeObject(customer));
+
+
+        //    // 6. Ghi log sử dụng theo ngày, chỉ cập nhật nếu đúng ngày hiện tại
+        //    string logKey = "customer:usage:log";
+        //    string logField = $"customer_log_{request.CustomerApiKey}";
+        //    string today = DateTime.UtcNow.ToString("dd/MM/yyyy");
+
+        //    var rawLog = await db.HashGetAsync(logKey, logField);
+
+        //    CustomerDailyUsageLog usageLog;
+
+        //    if (rawLog.HasValue)
+        //    {
+        //        usageLog = JsonConvert.DeserializeObject<CustomerDailyUsageLog>(rawLog!) ?? new();
+        //    }
+        //    else
+        //    {
+        //        usageLog = new CustomerDailyUsageLog
+        //        {
+        //            customer_api_key = request.CustomerApiKey,
+        //            logs = new Dictionary<string, CustomerUsageDetail>()
+        //        };
+        //    }
+
+        //    // cập nhật hoặc tạo mới theo ngày
+        //    if (usageLog.logs.TryGetValue(today, out var detail))
+        //    {
+        //        detail.total_checked += emails.Count;
+        //        detail.total_ok += validEmails.Count;
+        //    }
+        //    else
+        //    {
+        //        usageLog.logs[today] = new CustomerUsageDetail
+        //        {
+        //            total_checked = emails.Count,
+        //            total_ok = validEmails.Count
+        //        };
+        //    }
+
+        //    // lưu lại
+        //    await db.HashSetAsync(logKey, logField, JsonConvert.SerializeObject(usageLog));
+
+        //    stopwatch.Stop();
+        //    return Ok(new
+        //    {
+        //        totalChecked = emails.Count,
+        //        usedKeys = selectedKeys.Count,
+        //        durationSeconds = stopwatch.Elapsed.TotalSeconds,
+        //        results = results.ToList()
+        //    });
+        //}
+
+
         [HttpPost("query")]
         public async Task<IActionResult> QueryEmails([FromBody] EmailQueryRequest request, CancellationToken token)
         {
             var stopwatch = Stopwatch.StartNew();
-            List<EmailQueryRequest> users = new List<EmailQueryRequest>()
-            {
-                new EmailQueryRequest
+            List<EmailQueryRequest> users = new List<EmailQueryRequest>
                 {
-                    sheetName = "hadtt",
-                    CustomerApiKey = "9a7f8b10-8c3d-437b-9482-362b56a4106a",
-                },
-                new EmailQueryRequest
-                {
-                     sheetName = "tranght",
-                    CustomerApiKey = "bd427722-ebba-4da2-99e3-d091065f9ec5",
-                },
-                new EmailQueryRequest
-                {
-                    sheetName = "hoahp",
-                    CustomerApiKey = "313f2ed9-e776-47b3-acc1-511a021b8b7c",
-                },
-                 new EmailQueryRequest
-                {
-                    sheetName = "huyennk",
-                    CustomerApiKey = "81f3116c-c19e-4c96-82ca-a44d339b3141",
-                },
-            };
+                    new EmailQueryRequest { sheetName = "hadtt", CustomerApiKey = "9a7f8b10-8c3d-437b-9482-362b56a4106a" },
+                    new EmailQueryRequest { sheetName = "tranght", CustomerApiKey = "bd427722-ebba-4da2-99e3-d091065f9ec5" },
+                    new EmailQueryRequest { sheetName = "hoahp", CustomerApiKey = "313f2ed9-e776-47b3-acc1-511a021b8b7c" },
+                    new EmailQueryRequest { sheetName = "huyennk", CustomerApiKey = "81f3116c-c19e-4c96-82ca-a44d339b3141" },
+                };
 
-
-
-            var user = users.FirstOrDefault(x=> x.sheetName == request.sheetName);
+            var user = users.FirstOrDefault(x => x.sheetName == request.sheetName);
             if (user == null)
                 return BadRequest("Invalid user");
-
             request.CustomerApiKey = user.CustomerApiKey;
-
 
             if (string.IsNullOrWhiteSpace(request.CustomerApiKey))
                 return Unauthorized("Missing API key");
 
             var db = _redis.GetDatabase();
-
             string customerKey = "customer:data";
             string customerField = $"customer_{request.CustomerApiKey}";
 
@@ -82,19 +309,12 @@ namespace EmailChecked.Controllers
             if (customerJson.IsNullOrEmpty)
                 return NotFound("Customer not found");
 
-            var customer = JsonConvert.DeserializeObject<CustomerInfo>(customerJson!);
-
+            var customer = JsonConvert.DeserializeObject<CustomerInfo>(customerJson!)!;
             if (customer.isActive != "1")
                 return Unauthorized("Customer is not active");
 
-            if (customer.quota_used >= customer.quota_total)
-                return Unauthorized("API key quota exceeded");
-
-
             if (request.Names == null || request.Names.Count == 0 || string.IsNullOrWhiteSpace(request.Domain))
                 return BadRequest("Full name and domain are required");
-
-
 
             var emails = new List<string>();
             foreach (var fullName in request.Names)
@@ -115,24 +335,24 @@ namespace EmailChecked.Controllers
 
             // 1. Lấy danh sách các key còn quota bằng Lua Script
             var luaGetKeys = @"
-                            local rawKeys = redis.call('HVALS', 'apikey:data')
-                            local result = {}
+        local rawKeys = redis.call('HVALS', 'apikey:data')
+        local result = {}
 
-                            for i = 1, #rawKeys do
-                                local data = cjson.decode(rawKeys[i])
-                                local usage = tonumber(data['usage_count']) or 0
-                                local max = tonumber(data['max_limit']) or 0
-                                local isactive = data['isactive']
-                                if isactive == '1' and usage < max then
-                                    table.insert(result, cjson.encode({
-                                        keyId = data['key_id'],
-                                        realKey = data['key'],
-                                        canUse = max - usage
-                                    }))
-                                end
-                            end
-                            return result
-                        ";
+        for i = 1, #rawKeys do
+            local data = cjson.decode(rawKeys[i])
+            local usage = tonumber(data['usage_count']) or 0
+            local max = tonumber(data['max_limit']) or 0
+            local isactive = data['isactive']
+            if isactive == '1' and usage < max then
+                table.insert(result, cjson.encode({
+                    keyId = data['key_id'],
+                    realKey = data['key'],
+                    canUse = max - usage
+                }))
+            end
+        end
+        return result
+    ";
 
             var rawKeys = await db.ScriptEvaluateAsync(luaGetKeys);
             var validKeys = ((RedisResult[])rawKeys)
@@ -162,7 +382,42 @@ namespace EmailChecked.Controllers
             if (emailIndex < emails.Count)
                 return BadRequest("Not enough API quota available to process all emails.");
 
-            // 3. Kiểm tra email song song
+            var distributedEmails = selectedKeys.SelectMany(k => k.AssignedEmails).ToList();
+
+            // 3. Cập nhật quota_used bằng Lua (an toàn cho đa luồng)
+            var quotaUpdateScript = @"
+            local customerJson = redis.call('HGET', KEYS[1], KEYS[2])
+            if not customerJson then
+                return {err='Customer not found'}
+            end
+            local data = cjson.decode(customerJson)
+            local current = tonumber(data['quota_used']) or 0
+            local total = tonumber(data['quota_total']) or 0
+            local increment = tonumber(ARGV[1])
+
+            if current + increment > total then
+                return {err='Quota exceeded'}
+            end
+
+            data['quota_used'] = current + increment
+            redis.call('HSET', KEYS[1], KEYS[2], cjson.encode(data))
+            return data['quota_used']
+             ";
+
+            try
+            {
+                var quotaUpdateResult = await db.ScriptEvaluateAsync(quotaUpdateScript,
+                    new RedisKey[] { customerKey, customerField },
+                    new RedisValue[] { distributedEmails.Count });
+
+                customer.quota_used = (int)(long)quotaUpdateResult;
+            }
+            catch (RedisServerException ex) when (ex.Message.Contains("Quota exceeded"))
+            {
+                return Unauthorized("API key quota exceeded");
+            }
+
+            // 4. Kiểm tra email song song
             var results = new ConcurrentBag<object>();
             var semaphore = new SemaphoreSlim(13);
             var allTasks = new List<Task>();
@@ -190,90 +445,72 @@ namespace EmailChecked.Controllers
             await Task.WhenAll(allTasks);
 
             var validEmails = results
-                 .Cast<object>()
-                 .Select(r =>
-                 {
-                     var props = r.GetType().GetProperties();
-                     var email = props.First(p => p.Name == "email").GetValue(r)?.ToString();
-                     var responseStr = props.First(p => p.Name == "response").GetValue(r)?.ToString();
+                .Cast<object>()
+                .Select(r =>
+                {
+                    var props = r.GetType().GetProperties();
+                    var email = props.First(p => p.Name == "email").GetValue(r)?.ToString();
+                    var responseStr = props.First(p => p.Name == "response").GetValue(r)?.ToString();
 
-                     if(responseStr == "ok")
-                     {
-                         return email;
-                     }
-                     return null;
-                 })
-                 .Where(email => !string.IsNullOrWhiteSpace(email))
-                 .ToList();
+                    return responseStr == "ok" ? email : null;
+                })
+                .Where(email => !string.IsNullOrWhiteSpace(email))
+                .ToList();
 
-
-            // 4. Cập nhật usage cho từng key bằng Lua
+            // 5. Cập nhật usage từng key
             var updateUsageScript = @"
-                                    for i = 1, #KEYS do
-                                        local keyId = KEYS[i]
-                                        local inc = tonumber(ARGV[i])
-                                        local json = redis.call('HGET', 'apikey:data', keyId)
-                                        local data = cjson.decode(json)
+                for i = 1, #KEYS do
+                    local keyId = KEYS[i]
+                    local inc = tonumber(ARGV[i])
+                    local json = redis.call('HGET', 'apikey:data', keyId)
+                    local data = cjson.decode(json)
 
-                                        data['usage_count'] = (tonumber(data['usage_count']) or 0) + inc
-                                        redis.call('HSET', 'apikey:data', keyId, cjson.encode(data))
-                                    end
-                                    return 'OK'
-                                ";
+                    data['usage_count'] = (tonumber(data['usage_count']) or 0) + inc
+                    redis.call('HSET', 'apikey:data', keyId, cjson.encode(data))
+                end
+                return 'OK'
+            ";
 
             var redisKeys = selectedKeys.Select(k => (RedisKey)k.KeyId).ToArray();
             var usageCounts = selectedKeys.Select(k => (RedisValue)k.AssignedEmails.Count).ToArray();
             await db.ScriptEvaluateAsync(updateUsageScript, redisKeys, usageCounts);
-            // 5. Cập nhật quota_used cho customer
-            customer.quota_used += emails.Count;
-            await db.HashSetAsync(customerKey, customerField, JsonConvert.SerializeObject(customer));
 
-
-            // 6. Ghi log sử dụng theo ngày, chỉ cập nhật nếu đúng ngày hiện tại
+            // 6. Ghi log sử dụng theo ngày
             string logKey = "customer:usage:log";
             string logField = $"customer_log_{request.CustomerApiKey}";
             string today = DateTime.UtcNow.ToString("dd/MM/yyyy");
 
             var rawLog = await db.HashGetAsync(logKey, logField);
-
-            CustomerDailyUsageLog usageLog;
-
-            if (rawLog.HasValue)
-            {
-                usageLog = JsonConvert.DeserializeObject<CustomerDailyUsageLog>(rawLog!) ?? new();
-            }
-            else
-            {
-                usageLog = new CustomerDailyUsageLog
+            CustomerDailyUsageLog usageLog = rawLog.HasValue
+                ? JsonConvert.DeserializeObject<CustomerDailyUsageLog>(rawLog!) ?? new()
+                : new CustomerDailyUsageLog
                 {
                     customer_api_key = request.CustomerApiKey,
                     logs = new Dictionary<string, CustomerUsageDetail>()
                 };
-            }
 
-            // cập nhật hoặc tạo mới theo ngày
             if (usageLog.logs.TryGetValue(today, out var detail))
             {
-                detail.total_checked += emails.Count;
+                detail.total_checked += distributedEmails.Count;
                 detail.total_ok += validEmails.Count;
             }
             else
             {
                 usageLog.logs[today] = new CustomerUsageDetail
                 {
-                    total_checked = emails.Count,
+                    total_checked = distributedEmails.Count,
                     total_ok = validEmails.Count
                 };
             }
 
-            // lưu lại
             await db.HashSetAsync(logKey, logField, JsonConvert.SerializeObject(usageLog));
-
             stopwatch.Stop();
+
             return Ok(new
             {
-                totalChecked = emails.Count,
+                totalChecked = distributedEmails.Count,
                 usedKeys = selectedKeys.Count,
+                currentQuotaUsed = customer.quota_used,
                 durationSeconds = stopwatch.Elapsed.TotalSeconds,
                 results = results.ToList()
             });
@@ -740,6 +977,252 @@ namespace EmailChecked.Controllers
 
             var log = JsonConvert.DeserializeObject<CustomerDailyUsageLog>(raw);
             return Ok(log);
+        }
+
+
+        [HttpGet("summary")]
+        public async Task<IActionResult> GetSummary()
+        {
+            try
+            {
+                var lua = @"
+                        local hash_key = KEYS[1]
+                        local fields = redis.call('HKEYS', hash_key)
+                        local total = 0
+                        local used = 0
+
+                        for _, field in ipairs(fields) do
+                            local val = redis.call('HGET', hash_key, field)
+                            local ok, data = pcall(cjson.decode, val)
+                            if ok then
+                                total = total + (tonumber(data['quota_total']) or 0)
+                                used = used + (tonumber(data['quota_used']) or 0)
+                            end
+                        end
+
+                        return {total, used, total - used}
+                    ";
+
+                var db = _redis.GetDatabase();
+                var result = await db.ScriptEvaluateAsync(lua, new RedisKey[] { "customer:data" });
+                var redisResults = (RedisResult[])result;
+
+                return Ok(new QuotaSummary
+                {
+                    Total = (int)redisResults[0],
+                    Used = (int)redisResults[1],
+                    Remaining = (int)redisResults[2]
+                });
+
+            }
+            catch (Exception ex)
+            {
+                // Bạn có thể log lỗi tại đây bằng Serilog, ILogger, ...
+                return StatusCode(500, $"Error: {ex.Message}");
+            }
+        }
+
+        [HttpGet("log/used-today")]
+        public async Task<IActionResult> GetTotalUsedToday()
+        {
+            try
+            {
+                var today = DateTime.UtcNow.ToString("dd/MM/yyyy"); // Hoặc dùng local time nếu cần
+
+                var lua = @"
+            local hash_key = KEYS[1]
+            local today = ARGV[1]
+            local fields = redis.call('HKEYS', hash_key)
+            local total = 0
+
+            for _, field in ipairs(fields) do
+                local val = redis.call('HGET', hash_key, field)
+                local ok, data = pcall(cjson.decode, val)
+                if ok and data['logs'] and data['logs'][today] then
+                    total = total + (tonumber(data['logs'][today]['total_checked']) or 0)
+                end
+            end
+
+            return total
+        ";
+
+                var db = _redis.GetDatabase();
+                var result = await db.ScriptEvaluateAsync(lua,
+                    new RedisKey[] { "customer:usage:log" },
+                    new RedisValue[] { today });
+
+                int totalUsedToday = (int)result;
+
+                return Ok(new { Date = today, TotalUsedToday = totalUsedToday });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Redis log error: {ex.Message}");
+            }
+        }
+        [HttpGet("log/usage-detail")]
+        public async Task<IActionResult> GetUsageDetailPerUser()
+        {
+            try
+            {
+                var db = _redis.GetDatabase();
+                var today = DateTime.UtcNow.ToString("dd/MM/yyyy");
+
+                var luaScript = @"
+            local function safe_tonumber(value)
+              if type(value) == 'number' then
+                return value
+              elseif type(value) == 'string' then
+                local n = tonumber(value)
+                if n then return n else return 0 end
+              else
+                return 0
+              end
+            end
+
+            local log_hash_key = KEYS[1]
+            local profile_hash_key = KEYS[2]
+            local today = ARGV[1]
+
+            local log_fields = redis.call('HKEYS', log_hash_key)
+            local result = {}
+
+            for _, field in ipairs(log_fields) do
+                local log_val = redis.call('HGET', log_hash_key, field)
+                local ok1, log_data = pcall(cjson.decode, log_val)
+                local api_key = string.gsub(field, 'customer_log_', '')
+                local profile_val = redis.call('HGET', profile_hash_key, 'customer_' .. api_key)
+                local ok2, profile_data = pcall(cjson.decode, profile_val)
+
+                local total_checked = 0
+                local total_ok = 0
+
+                if ok1 and log_data['logs'] and log_data['logs'][today] then
+                    total_checked = safe_tonumber(log_data['logs'][today]['total_checked'])
+                    total_ok = safe_tonumber(log_data['logs'][today]['total_ok'])
+                end
+
+                if ok2 then
+                    local email = profile_data['email'] or ''
+                    local quota = safe_tonumber(profile_data['quota_total'])
+
+                    table.insert(result, cjson.encode({
+                        email = email,
+                        quota_total = quota,
+                        total_checked = total_checked,
+                        total_ok = total_ok
+                    }))
+                end
+            end
+
+            return result
+        ";
+
+                var redisResult = await db.ScriptEvaluateAsync(luaScript,
+                    new RedisKey[] { "customer:usage:log", "customer:data" },
+                    new RedisValue[] { today });
+
+                var resultArray = (RedisResult[])redisResult;
+
+                var list = resultArray
+                    .Select(r => JsonConvert.DeserializeObject<UsageLogPerUser>(r.ToString()))
+                    .ToList();
+
+                return Ok(list);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Redis script error: {ex.Message}");
+            }
+        }
+
+        [HttpGet("log/key-usage-optimized")]
+        public async Task<IActionResult> GetKeyUsageOptimized()
+        {
+            try
+            {
+                var db = _redis.GetDatabase();
+
+                var lua = @" local key = KEYS[1]
+                        local data = redis.call('HVALS', key)
+
+                        local parse_date = function(date_str)
+                            local d, m, y = date_str:match(""(%d+)/(%d+)/(%d+)"")
+                            return os.time({day=tonumber(d), month=tonumber(m), year=tonumber(y)})
+                        end
+
+                        local format_day = function(ts)
+                            local d = os.date(""*t"", ts)
+                            return string.format(""%02d/%02d"", d.day, d.month)
+                        end
+
+                        local format_week = function(ts)
+                            local d = os.date(""*t"", ts)
+                            local dow = d.wday % 7  -- Sunday=0
+                            local sunday_ts = ts + (7 - dow) * 86400
+                            return format_day(sunday_ts)
+                        end
+
+                        local format_month = function(ts)
+                            local d = os.date(""*t"", ts)
+                            return string.format(""01/%02d"", d.month)
+                        end
+
+                        local daily = {}
+                        local weekly = {}
+                        local monthly = {}
+
+                        for _, raw in ipairs(data) do
+                            local ok, obj = pcall(cjson.decode, raw)
+                            if ok and obj['logs'] then
+                                for date_str, v in pairs(obj['logs']) do
+                                    local ts = parse_date(date_str)
+                                    local total = tonumber(v['total_checked']) or 0
+
+                                    local d = format_day(ts)
+                                    daily[d] = (daily[d] or 0) + total
+
+                                    local w = format_week(ts)
+                                    weekly[w] = (weekly[w] or 0) + total
+
+                                    local m = format_month(ts)
+                                    monthly[m] = (monthly[m] or 0) + total
+                                end
+                            end
+                        end
+
+                        local result = {}
+
+                        for d, v in pairs(daily) do
+                            table.insert(result, cjson.encode({ name = d, daily = v, weekly = cjson.null, monthly = cjson.null }))
+                        end
+
+                        for w, v in pairs(weekly) do
+                            table.insert(result, cjson.encode({ name = w, daily = cjson.null, weekly = v, monthly = cjson.null }))
+                        end
+
+                        for m, v in pairs(monthly) do
+                            table.insert(result, cjson.encode({ name = m, daily = cjson.null, weekly = cjson.null, monthly = v }))
+                        end
+
+                        return result
+                        ";
+
+                var result = await db.ScriptEvaluateAsync(lua, new RedisKey[] { "customer:usage:log" });
+
+                var arr = (RedisResult[])result;
+
+                var list = arr.Select(x =>
+                    JsonConvert.DeserializeObject<KeyUsageStat>(x.ToString()))
+                    .OrderBy(x => x.Name) // hoặc theo date logic nếu cần
+                    .ToList();
+
+                return Ok(list);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Redis script error: {ex.Message}");
+            }
         }
 
     }
