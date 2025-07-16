@@ -1017,7 +1017,6 @@ namespace EmailChecked.Controllers
             }
             catch (Exception ex)
             {
-                // Bạn có thể log lỗi tại đây bằng Serilog, ILogger, ...
                 return StatusCode(500, $"Error: {ex.Message}");
             }
         }
