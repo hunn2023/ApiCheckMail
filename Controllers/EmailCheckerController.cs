@@ -476,34 +476,33 @@ namespace EmailChecked.Controllers
             await db.ScriptEvaluateAsync(updateUsageScript, redisKeys, usageCounts);
 
             // 6. Ghi log sử dụng theo ngày
+            var logUpdateScript = @"
+                            local logJson = redis.call('HGET', KEYS[1], KEYS[2])
+                            local usageLog = {}
+                            if logJson then usageLog = cjson.decode(logJson) end
+                            if not usageLog['customer_api_key'] then usageLog['customer_api_key'] = string.sub(KEYS[2], 15) end
+                            if not usageLog['logs'] then usageLog['logs'] = {} end
+                            local today = ARGV[1]
+                            local checked = tonumber(ARGV[2])
+                            local ok = tonumber(ARGV[3])
+                            if not usageLog['logs'][today] then
+                                usageLog['logs'][today] = { total_checked = 0, total_ok = 0 }
+                            end
+                            usageLog['logs'][today]['total_checked'] = usageLog['logs'][today]['total_checked'] + checked
+                            usageLog['logs'][today]['total_ok'] = usageLog['logs'][today]['total_ok'] + ok
+                            redis.call('HSET', KEYS[1], KEYS[2], cjson.encode(usageLog))
+                            return 'OK'
+                        ";
+
             string logKey = "customer:usage:log";
             string logField = $"customer_log_{request.CustomerApiKey}";
             string today = DateTime.UtcNow.ToString("dd/MM/yyyy");
 
-            var rawLog = await db.HashGetAsync(logKey, logField);
-            CustomerDailyUsageLog usageLog = rawLog.HasValue
-                ? JsonConvert.DeserializeObject<CustomerDailyUsageLog>(rawLog!) ?? new()
-                : new CustomerDailyUsageLog
-                {
-                    customer_api_key = request.CustomerApiKey,
-                    logs = new Dictionary<string, CustomerUsageDetail>()
-                };
+            await db.ScriptEvaluateAsync(logUpdateScript,
+                new RedisKey[] { logKey, logField },
+                new RedisValue[] { today, distributedEmails.Count, validEmails.Count });
 
-            if (usageLog.logs.TryGetValue(today, out var detail))
-            {
-                detail.total_checked += distributedEmails.Count;
-                detail.total_ok += validEmails.Count;
-            }
-            else
-            {
-                usageLog.logs[today] = new CustomerUsageDetail
-                {
-                    total_checked = distributedEmails.Count,
-                    total_ok = validEmails.Count
-                };
-            }
 
-            await db.HashSetAsync(logKey, logField, JsonConvert.SerializeObject(usageLog));
             stopwatch.Stop();
 
             return Ok(new
