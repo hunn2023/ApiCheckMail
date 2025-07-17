@@ -477,21 +477,27 @@ namespace EmailChecked.Controllers
 
             // 6. Ghi log sử dụng theo ngày
             var logUpdateScript = @"
-                            local logJson = redis.call('HGET', KEYS[1], KEYS[2])
-                            local usageLog = {}
-                            if logJson then usageLog = cjson.decode(logJson) end
-                            if not usageLog['customer_api_key'] then usageLog['customer_api_key'] = string.sub(KEYS[2], 15) end
-                            if not usageLog['logs'] then usageLog['logs'] = {} end
-                            local today = ARGV[1]
-                            local checked = tonumber(ARGV[2])
-                            local ok = tonumber(ARGV[3])
-                            if not usageLog['logs'][today] then
-                                usageLog['logs'][today] = { total_checked = 0, total_ok = 0 }
-                            end
-                            usageLog['logs'][today]['total_checked'] = usageLog['logs'][today]['total_checked'] + checked
-                            usageLog['logs'][today]['total_ok'] = usageLog['logs'][today]['total_ok'] + ok
-                            redis.call('HSET', KEYS[1], KEYS[2], cjson.encode(usageLog))
-                            return 'OK'
+                        local logJson = redis.call('HGET', KEYS[1], KEYS[2])
+                        local usageLog = {}
+                        if logJson then usageLog = cjson.decode(logJson) end
+                        if not usageLog['customer_api_key'] then usageLog['customer_api_key'] = string.sub(KEYS[2], 15) end
+                        if not usageLog['logs'] then usageLog['logs'] = {} end
+
+                        local today = ARGV[1]
+                        local checked = tonumber(ARGV[2])
+                        local ok = tonumber(ARGV[3])
+
+                        if not usageLog['logs'][today] then
+                            usageLog['logs'][today] = { total_checked = 0, total_ok = 0, total_domain = 0 }
+                        end
+
+                        usageLog['logs'][today]['total_checked'] = usageLog['logs'][today]['total_checked'] + checked
+                        usageLog['logs'][today]['total_ok'] = usageLog['logs'][today]['total_ok'] + ok
+                        usageLog['logs'][today]['total_domain'] = (usageLog['logs'][today]['total_domain'] or 0) + 1
+
+                        redis.call('HSET', KEYS[1], KEYS[2], cjson.encode(usageLog))
+                        return 'OK'
+
                         ";
 
             string logKey = "customer:usage:log";
