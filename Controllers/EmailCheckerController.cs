@@ -1073,54 +1073,58 @@ namespace EmailChecked.Controllers
                 var today = DateTime.UtcNow.ToString("dd/MM/yyyy");
 
                 var luaScript = @"
-            local function safe_tonumber(value)
-              if type(value) == 'number' then
-                return value
-              elseif type(value) == 'string' then
-                local n = tonumber(value)
-                if n then return n else return 0 end
-              else
-                return 0
-              end
-            end
+                            local function safe_tonumber(value)
+                            if type(value) == 'number' then
+                                return value
+                            elseif type(value) == 'string' then
+                                local n = tonumber(value)
+                                if n then return n else return 0 end
+                            else
+                                return 0
+                            end
+                        end
 
-            local log_hash_key = KEYS[1]
-            local profile_hash_key = KEYS[2]
-            local today = ARGV[1]
+                        local log_hash_key = KEYS[1]
+                        local profile_hash_key = KEYS[2]
+                        local today = ARGV[1]
 
-            local log_fields = redis.call('HKEYS', log_hash_key)
-            local result = {}
+                        local log_fields = redis.call('HKEYS', log_hash_key)
+                        local result = {}
 
-            for _, field in ipairs(log_fields) do
-                local log_val = redis.call('HGET', log_hash_key, field)
-                local ok1, log_data = pcall(cjson.decode, log_val)
-                local api_key = string.gsub(field, 'customer_log_', '')
-                local profile_val = redis.call('HGET', profile_hash_key, 'customer_' .. api_key)
-                local ok2, profile_data = pcall(cjson.decode, profile_val)
+                        for _, field in ipairs(log_fields) do
+                            local log_val = redis.call('HGET', log_hash_key, field)
+                            local ok1, log_data = pcall(cjson.decode, log_val)
+                            local api_key = string.gsub(field, 'customer_log_', '')
+                            local profile_val = redis.call('HGET', profile_hash_key, 'customer_' .. api_key)
+                            local ok2, profile_data = pcall(cjson.decode, profile_val)
 
-                local total_checked = 0
-                local total_ok = 0
+                            local total_checked = 0
+                            local total_ok = 0
+                            local total_domain = 0
 
-                if ok1 and log_data['logs'] and log_data['logs'][today] then
-                    total_checked = safe_tonumber(log_data['logs'][today]['total_checked'])
-                    total_ok = safe_tonumber(log_data['logs'][today]['total_ok'])
-                end
+                            if ok1 and log_data['logs'] and log_data['logs'][today] then
+                                total_checked = safe_tonumber(log_data['logs'][today]['total_checked'])
+                                total_ok = safe_tonumber(log_data['logs'][today]['total_ok'])
+                                total_domain = safe_tonumber(log_data['logs'][today]['total_domain']) -- thêm dòng này
+                            end
 
-                if ok2 then
-                    local email = profile_data['email'] or ''
-                    local quota = safe_tonumber(profile_data['quota_total'])
+                            if ok2 then
+                                local email = profile_data['email'] or ''
+                                local quota = safe_tonumber(profile_data['quota_total'])
 
-                    table.insert(result, cjson.encode({
-                        email = email,
-                        quota_total = quota,
-                        total_checked = total_checked,
-                        total_ok = total_ok
-                    }))
-                end
-            end
+                                table.insert(result, cjson.encode({
+                                    email = email,
+                                    quota_total = quota,
+                                    total_checked = total_checked,
+                                    total_ok = total_ok,
+                                    total_domain = total_domain -- thêm dòng này
+                                }))
+                            end
+                        end
 
-            return result
-        ";
+                        return result
+
+                                ";
 
                 var redisResult = await db.ScriptEvaluateAsync(luaScript,
                     new RedisKey[] { "customer:usage:log", "customer:data" },
@@ -1234,6 +1238,7 @@ namespace EmailChecked.Controllers
 
                         local checkedToday = 0
                         local okToday = 0
+                        local domainToday = 0
 
                         if rawLog then
                             local logData = cjson.decode(rawLog)
@@ -1241,6 +1246,7 @@ namespace EmailChecked.Controllers
                             if log then
                                 checkedToday = log.total_checked or 0
                                 okToday = log.total_ok or 0
+                                domainToday = log.total_domain or 0 -- 👈 Thêm dòng này
                             end
                         end
 
@@ -1249,7 +1255,8 @@ namespace EmailChecked.Controllers
                             quotaTotal = tonumber(customer.quota_total) or 0,
                             quotaUsed = tonumber(customer.quota_used) or 0,
                             checkedToday = checkedToday,
-                            okToday = okToday
+                            okToday = okToday,
+                            totalDomain = domainToday -- 👈 Thêm dòng này
                         }))
                     end
 
@@ -1284,6 +1291,7 @@ namespace EmailChecked.Controllers
                         r.okToday,
                         r.quotaTotal,
                         r.quotaUsed,
+                        r.totalDomain,
                         quotaRemaining = r.quotaTotal - r.quotaUsed,
                         percentUsed = $"{percent}%",
                         status = percent >= 100 ? "❌ Hết quota" : "✅ Còn quota"

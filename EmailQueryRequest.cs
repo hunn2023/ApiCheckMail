@@ -72,6 +72,9 @@ namespace ApiCheckMail
 
         [JsonProperty("total_ok")]
         public int TotalOk { get; set; }
+
+        [JsonProperty("total_domain")]
+        public int TotalDomain { get; set; }
     }
 
     public class KeyUsageStat
@@ -95,5 +98,7 @@ namespace ApiCheckMail
         public int quotaUsed { get; set; }
         public int checkedToday { get; set; }
         public int okToday { get; set; }
+
+        public int totalDomain { get; set; }
     }
 }
