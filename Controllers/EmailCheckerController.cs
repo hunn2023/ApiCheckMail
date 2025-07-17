@@ -480,7 +480,7 @@ namespace EmailChecked.Controllers
                         local logJson = redis.call('HGET', KEYS[1], KEYS[2])
                         local usageLog = {}
                         if logJson then usageLog = cjson.decode(logJson) end
-                        if not usageLog['customer_api_key'] then usageLog['customer_api_key'] = string.sub(KEYS[2], 15) end
+                        if not usageLog['customer_api_key'] then usageLog['customer_api_key'] = string.sub(KEYS[2], 14) end
                         if not usageLog['logs'] then usageLog['logs'] = {} end
 
                         local today = ARGV[1]
