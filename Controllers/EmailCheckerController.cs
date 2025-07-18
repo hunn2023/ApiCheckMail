@@ -1284,6 +1284,17 @@ namespace EmailChecked.Controllers
                 .Select(r =>
                 {
                     double percent = r.quotaTotal == 0 ? 0 : Math.Round((double)r.quotaUsed / r.quotaTotal * 100, 2);
+                    string status;
+                    if (percent == 0)
+                        status = "🔹 Chưa sử dụng";
+                    else if (percent < 50)
+                        status = "🟢 Còn nhiều quota";
+                    else if (percent < 90)
+                        status = "🟡 Gần hết quota";
+                    else if (percent < 100)
+                        status = "🟠 Sắp hết quota";
+                    else
+                        status = "❌ Hết quota";
                     return new
                     {
                         sheetName = apiKeyToName.TryGetValue(r.apiKey, out var name) ? name : r.apiKey,
@@ -1294,7 +1305,7 @@ namespace EmailChecked.Controllers
                         r.totalDomain,
                         quotaRemaining = r.quotaTotal - r.quotaUsed,
                         percentUsed = $"{percent}%",
-                        status = percent >= 100 ? "❌ Hết quota" : "✅ Còn quota"
+                        status = status
                     };
                 })
                 .ToList();
