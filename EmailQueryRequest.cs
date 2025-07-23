@@ -6,7 +6,7 @@ namespace ApiCheckMail
     {
         public string sheetName { get; set; }
 
-        public string CustomerApiKey { get; set; }  
+        public string CustomerApiKey { get; set; }
 
         public List<string> Names { get; set; }
 
@@ -101,4 +101,31 @@ namespace ApiCheckMail
 
         public int totalDomain { get; set; }
     }
+
+    public class AvailableKey
+    {
+        public string key_id { get; set; }
+
+        public string key_index => key_id?.Split('_').LastOrDefault() ?? string.Empty;
+
+        public string real_key { get; set; }
+        public int remaining { get; set; }
+    }
+
+    public class StaffDailyUsageResult
+    {
+        public string apiKey { get; set; }
+        public List<DailyUsage> usageByDate { get; set; }
+    }
+
+    public class DailyUsage
+    {
+        public string date { get; set; } // "dd/MM/yyyy"
+        public int ok { get; set; }
+        [JsonProperty("checked")]
+        public int checkedCount { get; set; }
+        public int domain { get; set; }
+    }
+
+
 }

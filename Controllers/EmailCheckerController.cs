@@ -1314,6 +1314,188 @@ namespace EmailChecked.Controllers
         }
 
 
+
+        [HttpGet("stats/all-days")]
+        public async Task<IActionResult> GetAllUsageByDay()
+        {
+            var db = _redis.GetDatabase();
+
+            // Bước 1: Gọi Lua script lấy toàn bộ usage
+            var luaScript = @"
+                        local customers = redis.call('HGETALL', KEYS[1])
+                        local logs = redis.call('HGETALL', KEYS[2])
+
+                        local result = {}
+
+                        for i = 1, #customers, 2 do
+                            local field = customers[i]
+                            local rawCustomer = customers[i + 1]
+                            local customer = cjson.decode(rawCustomer)
+
+                            local apiKey = string.gsub(field, 'customer_', '')
+                            local logField = 'customer_log_' .. apiKey
+                            local rawLog = nil
+
+                            for j = 1, #logs, 2 do
+                                if logs[j] == logField then
+                                    rawLog = logs[j + 1]
+                                    break
+                                end
+                            end
+
+                            local usageByDate = {}
+
+                            if rawLog then
+                                local logData = cjson.decode(rawLog)
+                                for date, log in pairs(logData.logs or {}) do
+                                    table.insert(usageByDate, {
+                                        date = date,
+                                        ok = log.total_ok or 0,
+                                        checked = log.total_checked or 0,
+                                        domain = log.total_domain or 0
+                                    })
+                                end
+                            end
+
+                            table.insert(result, cjson.encode({
+                                apiKey = apiKey,
+                                usageByDate = usageByDate
+                            }))
+                        end
+
+                        return result
+                    ";
+
+            var usageRawList = await db.ScriptEvaluateAsync(luaScript,
+                new RedisKey[] { "customer:data", "customer:usage:log" },
+                Array.Empty<RedisValue>());
+
+            var usageList = ((RedisResult[])usageRawList)
+                .Select(r => JsonConvert.DeserializeObject<StaffDailyUsageResult>((string)(RedisValue)r))
+                .ToList();
+
+            // Bước 2: ánh xạ API key -> tên nhân viên
+            var apiKeyToName = new Dictionary<string, string>
+            {
+                ["9a7f8b10-8c3d-437b-9482-362b56a4106a"] = "hadtt",
+                ["bd427722-ebba-4da2-99e3-d091065f9ec5"] = "tranght",
+                ["313f2ed9-e776-47b3-acc1-511a021b8b7c"] = "hoahp",
+                ["81f3116c-c19e-4c96-82ca-a44d339b3141"] = "huyennk"
+            };
+
+            // Bước 3: Gom nhóm theo ngày
+            var groupedByDate = usageList
+                .SelectMany(user =>
+                    user.usageByDate.Select(day => new
+                    {
+                        date = day.date,
+                        record = new
+                        {
+                            name = apiKeyToName.TryGetValue(user.apiKey, out var name) ? name : user.apiKey,
+                            companyChecked = day.domain,
+                            emailsOk = day.ok,
+                            creditsUsed = day.checkedCount
+                        }
+                    }))
+                .GroupBy(x => x.date)
+                .OrderBy(g => DateTime.ParseExact(g.Key, "dd/MM/yyyy", null))
+                .Select(g =>
+                {
+                    var records = g.Select(x => x.record).ToList();
+                    var totalCompanyChecked = records.Sum(r => r.companyChecked);
+
+                    return new
+                    {
+                        date = g.Key,
+                        totalCompanyChecked,
+                        records
+                    };
+                })
+                .ToList();
+
+            return Ok(groupedByDate);
+        }
+
+
+
+        [HttpGet("keys/available")]
+        public async Task<IActionResult> GetAvailableKeys()
+        {
+            var db = _redis.GetDatabase();
+
+            var luaScript = @"
+                        local rawKeys = redis.call('HVALS', KEYS[1])
+                        local result = {}
+
+                        for i = 1, #rawKeys do
+                            local data = cjson.decode(rawKeys[i])
+                            local isActive = data['isactive']
+                            local usage = tonumber(data['usage_count']) or 0
+                            local max = tonumber(data['max_limit']) or 0
+
+                            if isActive == '1' and usage < max then
+                                table.insert(result, cjson.encode({
+                                    key_id = data['key_id'],
+                                    real_key = data['key'],
+                                    remaining = max - usage
+                                }))
+                            end
+                        end
+
+                        return result
+                    ";
+
+            var redisResult = await db.ScriptEvaluateAsync(luaScript,
+                new RedisKey[] { "apikey:data" }, new RedisValue[] { });
+
+            var keys = ((RedisResult[])redisResult)
+                .Select(r => JsonConvert.DeserializeObject<AvailableKey>((string)(RedisValue)r))
+                .ToList();
+
+            keys = keys.OrderByDescending(x => x.key_index)
+                                 .ToList();
+            var totalremaining = keys.Sum(x => x.remaining);
+
+            return Ok(keys);
+        }
+
+        
+
+    //    [Microsoft.AspNetCore.Mvc.HttpDelete("keys/expired")]
+    //    public async Task<IActionResult> DeleteExpiredKeys()
+    //    {
+    //        var db = _redis.GetDatabase();
+
+    //        var luaScript = @"
+    //    local allKeys = redis.call('HGETALL', KEYS[1])
+    //    local deletedCount = 0
+
+    //    for i = 1, #allKeys, 2 do
+    //        local field = allKeys[i]
+    //        local rawJson = allKeys[i + 1]
+    //        local ok, data = pcall(cjson.decode, rawJson)
+
+    //        if ok then
+    //            local isactive = data['isactive']
+    //            local usage = tonumber(data['usage_count']) or 0
+    //            local max = tonumber(data['max_limit']) or 0
+
+    //            if isactive ~= '1' or usage >= max then
+    //                redis.call('HDEL', KEYS[1], field)
+    //                deletedCount = deletedCount + 1
+    //            end
+    //        end
+    //    end
+
+    //    return deletedCount
+    //";
+
+    //        var deleted = await db.ScriptEvaluateAsync(luaScript, new RedisKey[] { "apikey:data" }, Array.Empty<RedisValue>());
+    //        return Ok(new { deleted = (int)(long)deleted });
+    //    }
+
+
+
         private static DateTime FirstDayOfWeek(DateTime dt)
         {
             int diff = dt.DayOfWeek - DayOfWeek.Sunday;
