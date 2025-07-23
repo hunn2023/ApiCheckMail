@@ -1383,35 +1383,42 @@ namespace EmailChecked.Controllers
                 ["81f3116c-c19e-4c96-82ca-a44d339b3141"] = "huyennk"
             };
 
+            var now = DateTime.UtcNow; // hoặc DateTime.Now nếu theo giờ VN
+            var startOfMonth = new DateTime(now.Year, now.Month, 1);
+            var endOfMonth = startOfMonth.AddMonths(1).AddDays(-1);
+
+
             // Bước 3: Gom nhóm theo ngày
             var groupedByDate = usageList
-                .SelectMany(user =>
-                    user.usageByDate.Select(day => new
-                    {
-                        date = day.date,
-                        record = new
-                        {
-                            name = apiKeyToName.TryGetValue(user.apiKey, out var name) ? name : user.apiKey,
-                            companyChecked = day.domain,
-                            emailsOk = day.ok,
-                            creditsUsed = day.checkedCount
-                        }
-                    }))
-                .GroupBy(x => x.date)
-                .OrderBy(g => DateTime.ParseExact(g.Key, "dd/MM/yyyy", null))
-                .Select(g =>
-                {
-                    var records = g.Select(x => x.record).ToList();
-                    var totalCompanyChecked = records.Sum(r => r.companyChecked);
+             .SelectMany(user =>
+                 user.usageByDate.Select(day => new
+                 {
+                     date = day.date,
+                     parsedDate = DateTime.TryParseExact(day.date, "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out var dt) ? dt : (DateTime?)null,
+                     record = new
+                     {
+                         name = apiKeyToName.TryGetValue(user.apiKey, out var name) ? name : user.apiKey,
+                         companyChecked = day.domain,
+                         emailsOk = day.ok,
+                         creditsUsed = day.checkedCount
+                     }
+                 }))
+             .Where(x => x.parsedDate != null && x.parsedDate >= startOfMonth && x.parsedDate <= endOfMonth)
+             .GroupBy(x => x.date)
+             .OrderBy(g => DateTime.ParseExact(g.Key, "dd/MM/yyyy", null))
+             .Select(g =>
+             {
+                 var records = g.Select(x => x.record).ToList();
+                 var totalCompanyChecked = records.Sum(r => r.companyChecked);
 
-                    return new
-                    {
-                        date = g.Key,
-                        totalCompanyChecked,
-                        records
-                    };
-                })
-                .ToList();
+                 return new
+                 {
+                     date = g.Key,
+                     totalCompanyChecked,
+                     records
+                 };
+             })
+             .ToList();
 
             return Ok(groupedByDate);
         }
