@@ -8,6 +8,7 @@ using Newtonsoft.Json.Linq;
 using StackExchange.Redis;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -322,7 +323,8 @@ namespace EmailChecked.Controllers
                 if (string.IsNullOrWhiteSpace(fullName))
                     return BadRequest("Full name cannot be empty");
 
-                var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var fullNameC = ConvertMacronToPlainAscii(fullName);
+                var parts = fullNameC.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 var lastName = parts.Length > 0 ? parts[0] : "";
                 var firstName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
 
@@ -1026,44 +1028,44 @@ namespace EmailChecked.Controllers
             }
         }
 
-        [HttpGet("log/used-today")]
-        public async Task<IActionResult> GetTotalUsedToday()
-        {
-            try
-            {
-                var today = DateTime.UtcNow.ToString("dd/MM/yyyy"); // Hoặc dùng local time nếu cần
+        //[HttpGet("log/used-today")]
+        //public async Task<IActionResult> GetTotalUsedToday()
+        //{
+        //    try
+        //    {
+        //        var today = DateTime.UtcNow.ToString("dd/MM/yyyy"); // Hoặc dùng local time nếu cần
 
-                var lua = @"
-            local hash_key = KEYS[1]
-            local today = ARGV[1]
-            local fields = redis.call('HKEYS', hash_key)
-            local total = 0
+        //        var lua = @"
+        //    local hash_key = KEYS[1]
+        //    local today = ARGV[1]
+        //    local fields = redis.call('HKEYS', hash_key)
+        //    local total = 0
 
-            for _, field in ipairs(fields) do
-                local val = redis.call('HGET', hash_key, field)
-                local ok, data = pcall(cjson.decode, val)
-                if ok and data['logs'] and data['logs'][today] then
-                    total = total + (tonumber(data['logs'][today]['total_checked']) or 0)
-                end
-            end
+        //    for _, field in ipairs(fields) do
+        //        local val = redis.call('HGET', hash_key, field)
+        //        local ok, data = pcall(cjson.decode, val)
+        //        if ok and data['logs'] and data['logs'][today] then
+        //            total = total + (tonumber(data['logs'][today]['total_checked']) or 0)
+        //        end
+        //    end
 
-            return total
-        ";
+        //    return total
+        //";
 
-                var db = _redis.GetDatabase();
-                var result = await db.ScriptEvaluateAsync(lua,
-                    new RedisKey[] { "customer:usage:log" },
-                    new RedisValue[] { today });
+        //        var db = _redis.GetDatabase();
+        //        var result = await db.ScriptEvaluateAsync(lua,
+        //            new RedisKey[] { "customer:usage:log" },
+        //            new RedisValue[] { today });
 
-                int totalUsedToday = (int)result;
+        //        int totalUsedToday = (int)result;
 
-                return Ok(new { Date = today, TotalUsedToday = totalUsedToday });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Redis log error: {ex.Message}");
-            }
-        }
+        //        return Ok(new { Date = today, TotalUsedToday = totalUsedToday });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, $"Redis log error: {ex.Message}");
+        //    }
+        //}
         [HttpGet("log/usage-detail")]
         public async Task<IActionResult> GetUsageDetailPerUser()
         {
@@ -1466,40 +1468,40 @@ namespace EmailChecked.Controllers
             return Ok(keys);
         }
 
-        
 
-    //    [Microsoft.AspNetCore.Mvc.HttpDelete("keys/expired")]
-    //    public async Task<IActionResult> DeleteExpiredKeys()
-    //    {
-    //        var db = _redis.GetDatabase();
 
-    //        var luaScript = @"
-    //    local allKeys = redis.call('HGETALL', KEYS[1])
-    //    local deletedCount = 0
+        //    [Microsoft.AspNetCore.Mvc.HttpDelete("keys/expired")]
+        //    public async Task<IActionResult> DeleteExpiredKeys()
+        //    {
+        //        var db = _redis.GetDatabase();
 
-    //    for i = 1, #allKeys, 2 do
-    //        local field = allKeys[i]
-    //        local rawJson = allKeys[i + 1]
-    //        local ok, data = pcall(cjson.decode, rawJson)
+        //        var luaScript = @"
+        //    local allKeys = redis.call('HGETALL', KEYS[1])
+        //    local deletedCount = 0
 
-    //        if ok then
-    //            local isactive = data['isactive']
-    //            local usage = tonumber(data['usage_count']) or 0
-    //            local max = tonumber(data['max_limit']) or 0
+        //    for i = 1, #allKeys, 2 do
+        //        local field = allKeys[i]
+        //        local rawJson = allKeys[i + 1]
+        //        local ok, data = pcall(cjson.decode, rawJson)
 
-    //            if isactive ~= '1' or usage >= max then
-    //                redis.call('HDEL', KEYS[1], field)
-    //                deletedCount = deletedCount + 1
-    //            end
-    //        end
-    //    end
+        //        if ok then
+        //            local isactive = data['isactive']
+        //            local usage = tonumber(data['usage_count']) or 0
+        //            local max = tonumber(data['max_limit']) or 0
 
-    //    return deletedCount
-    //";
+        //            if isactive ~= '1' or usage >= max then
+        //                redis.call('HDEL', KEYS[1], field)
+        //                deletedCount = deletedCount + 1
+        //            end
+        //        end
+        //    end
 
-    //        var deleted = await db.ScriptEvaluateAsync(luaScript, new RedisKey[] { "apikey:data" }, Array.Empty<RedisValue>());
-    //        return Ok(new { deleted = (int)(long)deleted });
-    //    }
+        //    return deletedCount
+        //";
+
+        //        var deleted = await db.ScriptEvaluateAsync(luaScript, new RedisKey[] { "apikey:data" }, Array.Empty<RedisValue>());
+        //        return Ok(new { deleted = (int)(long)deleted });
+        //    }
 
 
 
@@ -1509,6 +1511,30 @@ namespace EmailChecked.Controllers
             if (diff < 0) diff += 7;
             return dt.AddDays(-1 * diff).Date;
         }
+
+
+        public static string ConvertMacronToPlainAscii(string input)
+        {
+            var replacements = new Dictionary<char, char>
+                {
+                    { 'ā', 'a' }, { 'Ā', 'A' },
+                    { 'ē', 'e' }, { 'Ē', 'E' },
+                    { 'ī', 'i' }, { 'Ī', 'I' },
+                    { 'ō', 'o' }, { 'Ō', 'O' },
+                    { 'ū', 'u' }, { 'Ū', 'U' }
+                };
+
+            var result = new StringBuilder(input.Length);
+            foreach (var c in input)
+            {
+                if (replacements.TryGetValue(c, out char plainChar))
+                    result.Append(plainChar);
+                else
+                    result.Append(c);
+            }
+            return result.ToString();
+        }
+
 
     }
 }
